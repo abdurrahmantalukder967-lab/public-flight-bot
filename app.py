@@ -9,7 +9,7 @@ from flask import Flask, request
 app = Flask(__name__)
 
 # Fetch Telegram Bot Token from Render Environment Variables
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+BOT_TOKEN = "8924222773:AAHtjTaGPTnGMcoYsUkgxPhaFZYtChxIWNE"
 
 # Dictionary to store registered user locations and notified flights
 # Structure: { chat_id: {"lat": float, "lon": float, "notified": set()} }
@@ -35,7 +35,7 @@ def calculate_distance(lat1, lon1, lat2, lon2):
 def send_telegram_message(chat_id, text, reply_markup=None):
     if not BOT_TOKEN:
         return
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{"8924222773:AAHtjTaGPTnGMcoYsUkgxPhaFZYtChxIWNE"}/sendMessage"
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
     if reply_markup:
         payload["reply_markup"] = reply_markup
