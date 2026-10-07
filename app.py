@@ -4,6 +4,7 @@ import math
 import json
 import requests
 import threading
+from datetime import datetime, timezone, timedelta
 from flask import Flask, request
 
 app = Flask(__name__)
@@ -92,11 +93,16 @@ def fetch_flights():
 def background_tracker():
     while True:
         try:
-            if user_locations:
+            # Re-load from file each cycle to stay synced across processes
+            current_users = load_locations()
+            if current_users:
                 data = fetch_flights()
-                current_time_str = time.strftime("%I:%M:%S %p")
                 
-                for chat_id_str, loc in list(user_locations.items()):
+                # Bangladesh Time (BST +6)
+                bst = timezone(timedelta(hours=6))
+                current_time_str = datetime.now(bst).strftime("%I:%M:%S %p")
+                
+                for chat_id_str, loc in list(current_users.items()):
                     user_lat = loc["lat"]
                     user_lon = loc["lon"]
                     
@@ -138,13 +144,13 @@ def background_tracker():
                                     send_telegram_message(int(chat_id_str), msg)
                                     notified_flights[chat_id_str].add(flight_id)
                     
-                    # 90km-এর বাইরে গেলে মেমরি থেকে রিমুভ
+                    # Remove flights out of radius
                     notified_flights[chat_id_str] = notified_flights[chat_id_str].intersection(currently_nearby)
                     
         except Exception as e:
             print(f"Error in background tracker loop: {e}")
             
-        time.sleep(60)
+        time.sleep(40)
 
 # Global Thread Reference & Handler
 tracker_thread = None
