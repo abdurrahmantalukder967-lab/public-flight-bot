@@ -1,6 +1,5 @@
 import math
 import os
-import sqlite3
 import requests
 import time
 from datetime import datetime
@@ -9,47 +8,17 @@ from flask import Flask, request
 
 app = Flask(__name__)
 
-# --- Configuration ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8924222773:AAHtjTaGPTnGMcoYsUkgxPhaFZYtChxIWNE")
 CHECK_INTERVAL = 57
 
-# Memory set for tracked planes per user session: {chat_id: set(icao_ids)}
+# Global memory storage
+users_data = {}
 alerted_planes = {}
 
-# --- Database Setup ---
-DB_NAME = "flight_bot.db"
+# Default fallback location (Sunamganj Sadar)
+DEFAULT_LAT = 25.0706365
+DEFAULT_LON = 91.4102269
 
-def init_db():
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            chat_id TEXT PRIMARY KEY,
-            lat REAL,
-            lon REAL,
-            radius REAL DEFAULT 90.0,
-            active INTEGER DEFAULT 1
-        )
-    ''')
-    conn.commit()
-    conn.close()
-
-init_db()
-
-def db_execute(query, params=(), fetchall=False, fetchone=False):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute(query, params)
-    res = None
-    if fetchall:
-        res = cursor.fetchall()
-    elif fetchone:
-        res = cursor.fetchone()
-    conn.commit()
-    conn.close()
-    return res
-
-# --- Static Data ---
 AIRLINE_NAMES = {
     "AQA": "Air Astra", "BBC": "Biman Bangladesh Airlines", "UBG": "US-Bangla Airlines",
     "VOX": "Air Astra", "IGO": "IndiGo", "AIC": "Air India", "SEJ": "SpiceJet",
@@ -112,10 +81,9 @@ def send_telegram(chat_id, message):
     except Exception as e:
         print(f"Telegram error for {chat_id}:", e, flush=True)
 
-# --- Webhook Routes ---
 @app.route("/", methods=["GET"])
 def health_check():
-    return "Public Bot Online", 200
+    return "Bot Online", 200
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -128,51 +96,42 @@ def webhook():
 
         if chat_id:
             chat_id = str(chat_id)
-            
-            # Ensure user exists in DB
-            user = db_execute("SELECT chat_id FROM users WHERE chat_id=?", (chat_id,), fetchone=True)
-            if not user:
-                db_execute("INSERT INTO users (chat_id, active) VALUES (?, 1)", (chat_id,))
+            if chat_id not in users_data:
+                users_data[chat_id] = {'lat': DEFAULT_LAT, 'lon': DEFAULT_LON, 'radius': 90.0, 'active': True}
 
-            # Handle /start
             if text.startswith("/start"):
-                db_execute("UPDATE users SET active=1 WHERE chat_id=?", (chat_id,))
+                users_data[chat_id]['active'] = True
                 msg = (
-                    "👋 <b>Welcome to Public Flight Tracker Bot!</b>\n\n"
-                    "📍 আপনার আশেপাশের প্লেন ট্র্যাক করতে আপনার <b>Location</b> অথবা <b>Live Location</b> পাঠান।\n\n"
+                    "👋 <b>Welcome to Flight Tracker Bot!</b>\n\n"
+                    "📍 আপনার নিজের লোকেশনের প্লেন দেখতে <b>Location</b> অথবা <b>Live Location</b> শেয়ার করুন।\n"
+                    "ডিফল্ট হিসেবে সুনামগঞ্জের লোকেশন সেট করা আছে।\n\n"
                     "⚙️ <b>Commands:</b>\n"
-                    "• <code>/radius 60</code> - ট্র্যাকিং রেডিয়াস বদলে ৬০ কিমি করা\n"
-                    "• <code>/stop</code> - অ্যালার্ট বন্ধ করা"
+                    "• <code>/radius 60</code> - ট্র্যাকিং রেডিয়াস পরিবর্তন (যেমন: ৬০ কিমি)\n"
+                    "• <code>/stop</code> - ট্র্যাকিং বন্ধ করা"
                 )
                 send_telegram(chat_id, msg)
 
-            # Handle /stop
             elif text.startswith("/stop"):
-                db_execute("UPDATE users SET active=0 WHERE chat_id=?", (chat_id,))
-                send_telegram(chat_id, "🛑 আপনার ফ্লাইট অ্যালার্ট বন্ধ করা হয়েছে। চালু করতে আবার <b>Location</b> শেয়ার করুন বা /start চাপুন।")
+                users_data[chat_id]['active'] = False
+                send_telegram(chat_id, "🛑 অ্যালার্ট বন্ধ করা হয়েছে।")
 
-            # Handle /radius
             elif text.startswith("/radius"):
                 try:
                     r_val = float(text.split()[1])
                     if 10.0 <= r_val <= 300.0:
-                        db_execute("UPDATE users SET radius=? WHERE chat_id=?", (r_val, chat_id))
-                        send_telegram(chat_id, f"✅ আপনার ট্র্যাকিং রেডিয়াস <b>{r_val} km</b> সেট করা হয়েছে।")
-                    else:
-                        send_telegram(chat_id, "⚠️ রেডিয়াস ১০ কিমি থেকে ৩০০ কিমির মধ্যে দিন।")
+                        users_data[chat_id]['radius'] = r_val
+                        send_telegram(chat_id, f"✅ রেডিয়াস <b>{r_val} km</b> সেট করা হয়েছে।")
                 except:
                     send_telegram(chat_id, "❌ সঠিক ফরম্যাট: <code>/radius 50</code>")
 
-            # Handle Location
             elif location:
-                lat = location.get("latitude")
-                lon = location.get("longitude")
-                db_execute("UPDATE users SET lat=?, lon=?, active=1 WHERE chat_id=?", (lat, lon, chat_id))
-                send_telegram(chat_id, "📍 <b>Location Updated!</b> আপনার আকাশে প্লেন আসলেই অ্যালার্ট পাবেন।")
+                users_data[chat_id]['lat'] = location.get("latitude")
+                users_data[chat_id]['lon'] = location.get("longitude")
+                users_data[chat_id]['active'] = True
+                send_telegram(chat_id, "📍 <b>Location updated!</b> এখন থেকে আপনার লোকেশনের ওপর দিয়ে প্লেন গেলে অ্যালার্ট পাবেন।")
 
     return "OK", 200
 
-# --- Flightradar24 API Fetching ---
 def get_flight_details(flight_id):
     url = f"https://data-live.flightradar24.com/clickapi/v1/data/a/default/all/json?flight={flight_id}"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
@@ -200,19 +159,17 @@ def fetch_fr24_feed():
         print("FR24 Feed Fetch Error:", e, flush=True)
         return {}
 
-# --- Multi-user Scanner Loop ---
 def scanner_loop():
-    print("Public Scanner Loop Running...", flush=True)
+    print("Background Scanner Loop Running...", flush=True)
     while True:
         try:
-            # Fetch all active users with valid location
-            active_users = db_execute("SELECT chat_id, lat, lon, radius FROM users WHERE active=1 AND lat IS NOT NULL AND lon IS NOT NULL", fetchall=True)
+            active_users = {cid: u for cid, u in users_data.items() if u['active']}
 
             if active_users:
                 feed_data = fetch_fr24_feed()
 
-                for user in active_users:
-                    chat_id, u_lat, u_lon, u_radius = user[0], user[1], user[2], user[3]
+                for chat_id, u_info in active_users.items():
+                    u_lat, u_lon, u_radius = u_info['lat'], u_info['lon'], u_info['radius']
                     
                     if chat_id not in alerted_planes:
                         alerted_planes[chat_id] = set()
@@ -265,7 +222,6 @@ def scanner_loop():
                                     send_telegram(chat_id, msg)
                                     alerted_planes[chat_id].add(key)
 
-                    # Clear out-of-range planes from memory
                     alerted_planes[chat_id] = {p for p in alerted_planes[chat_id] if p in current_in_range}
 
         except Exception as err:
@@ -273,7 +229,6 @@ def scanner_loop():
 
         time.sleep(CHECK_INTERVAL)
 
-# Start thread
 Thread(target=scanner_loop, daemon=True).start()
 
 if __name__ == "__main__":
